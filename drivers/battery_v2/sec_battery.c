@@ -4826,11 +4826,10 @@ ssize_t sec_bat_show_attrs(struct device *dev,
 			} else if (is_hv_wire_type(battery->cable_type)) {
 				check_val = 1;
 #if defined(CONFIG_CCIC_NOTIFIER)
-			} else if (is_pd_wire_type(battery->cable_type)) {
-				if (battery->pd_max_charge_power >= HV_CHARGER_STATUS_STANDARD1 &&
-					battery->pdic_info.sink_status.available_pdo_num > 1) {
-					check_val = 1;
-				}
+			} else if (is_pd_wire_type(battery->cable_type) &&
+				(battery->pd_max_charge_power >= HV_CHARGER_STATUS_STANDARD1) &&
+				(battery->pdic_info.sink_status.available_pdo_num > 1)) {
+				check_val = 1;
 #endif
 			} else if (battery->wire_status == SEC_BATTERY_CABLE_PREPARE_TA) {
 				check_val = 1;

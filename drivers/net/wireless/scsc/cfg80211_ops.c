@@ -23,6 +23,20 @@
 /* TODO: Remove after FAPI update */
 #define SLSI_SCANTYPE_SINGLE_CHANNEL_SCAN   0x0013
 
+
+/* Ext capab is decided by firmware. But there are certain bits
+ * which are set by supplicant. So we set the capab and mask in
+ * such way so that supplicant sets only the bits our solution supports
+ */
+
+static const u8                    slsi_extended_cap[] = {
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+static const u8                    slsi_extended_cap_mask[] = {
+	0xFF, 0xFF, 0xFF, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+};
+
 static uint keep_alive_period = SLSI_P2PGO_KEEP_ALIVE_PERIOD_SEC;
 module_param(keep_alive_period, uint, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(keep_alive_period, "default is 10 seconds");
@@ -219,6 +233,7 @@ int slsi_add_key(struct wiphy *wiphy, struct net_device *dev,
 		SLSI_NET_DBG3(dev, SLSI_CFG80211, "WEP Key: store key\n");
 		r = slsi_mlme_set_key(sdev, dev, key_index, FAPI_KEYTYPE_WEP, bc_mac_addr, params);
 		if (r == FAPI_RESULTCODE_SUCCESS) {
+			ndev_vif->sta.wep_key_set = true;
 			/* if static ip is set before connection, after setting keys enable powersave. */
 			if (ndev_vif->ipaddress)
 				slsi_mlme_powermgt(sdev, dev, ndev_vif->set_power_mode);
@@ -508,11 +523,6 @@ int slsi_scan(struct wiphy *wiphy, struct net_device *dev,
 	if (SLSI_IS_VIF_INDEX_WLAN(ndev_vif) && (request->ie)) {
 #endif
 		const u8 *ie;
-
-		/* check HS2 related bits in extended capabilties (interworking, WNM,QoS Map, BSS transition) and set in MIB*/
-		r = slsi_mlme_set_hs2_ext_cap(sdev, dev, request->ie, request->ie_len);
-		if (r)
-			goto exit;
 
 		/* Supplicant adds wsc and p2p in Station scan at the end of scan request ie.
 		 * for non-wps case remove both wps and p2p IEs
@@ -1058,6 +1068,10 @@ int slsi_connect(struct wiphy *wiphy, struct net_device *dev,
 	 */
 	netif_carrier_on(dev);
 	ndev_vif->sta.vif_status = SLSI_VIF_STATUS_CONNECTING;
+
+	r = slsi_set_ext_cap(sdev, dev, sme->ie, sme->ie_len, slsi_extended_cap_mask);
+	if (r != 0)
+		SLSI_NET_ERR(dev, "Failed to set extended capability MIB: %d\n", r);
 
 #ifdef CONFIG_SCSC_WLAN_SAE_CONFIG
 	if (sme->auth_type == NL80211_AUTHTYPE_SAE && (sme->flags & CONNECT_REQ_EXTERNAL_AUTH_SUPPORT)) {
@@ -2974,8 +2988,8 @@ static int slsi_update_ft_ies(struct wiphy *wiphy, struct net_device *dev, struc
 	if (ndev_vif->vif_type == FAPI_VIFTYPE_STATION) {
 		const u8 *keo_ie_pos = NULL;
 		u8 *ie_buf = NULL;
-		u8 ie_len = 0;
-		u8 ie_buf_len = 0;
+		int ie_len = 0;
+		int ie_buf_len = 0;
 
 		keo_ie_pos = cfg80211_find_vendor_ie(WLAN_OUI_SAMSUNG, WLAN_OUI_TYPE_SAMSUNG_KEO,
 						     ndev_vif->sta.assoc_req_add_info_elem,
@@ -2991,13 +3005,20 @@ static int slsi_update_ft_ies(struct wiphy *wiphy, struct net_device *dev, struc
 				return -ENOMEM;
 			}
 			ie_len = ftie->ie_len;
+			if (ie_buf_len < ie_len) {
+				SLSI_NET_ERR(dev, "ft_ie buffer overflow!!\n");
+				kfree(ie_buf);
+				ie_buf = NULL;
+				SLSI_MUTEX_UNLOCK(ndev_vif->vif_mutex);
+				return -EINVAL;
+			}
 			memcpy(ie_buf, ftie->ie, ie_len);
 			if ((ie_buf_len - ie_len) >= ((int)keo_ie_pos[1]+ 2)) {
 				memcpy(&ie_buf[ie_len], keo_ie_pos, ((int)keo_ie_pos[1]+ 2));
 				ie_len += (keo_ie_pos[1] + 2);
 				keo_ie_pos += (keo_ie_pos[1] + 2);
 			} else {
-				SLSI_NET_ERR(dev, "ie_buf buffer overflow!\n");
+				SLSI_NET_ERR(dev, "ie_buf buffer overflow!!\n");
 				kfree(ie_buf);
 				ie_buf = NULL;
 				SLSI_MUTEX_UNLOCK(ndev_vif->vif_mutex);
@@ -3453,6 +3474,10 @@ struct slsi_dev                           *slsi_cfg80211_new(struct device *dev)
 
 	wiphy->cipher_suites = slsi_cipher_suites;
 	wiphy->n_cipher_suites = ARRAY_SIZE(slsi_cipher_suites);
+
+	wiphy->extended_capabilities = slsi_extended_cap;
+	wiphy->extended_capabilities_mask = slsi_extended_cap_mask;
+	wiphy->extended_capabilities_len = ARRAY_SIZE(slsi_extended_cap);
 
 	wiphy->mgmt_stypes = ieee80211_default_mgmt_stypes;
 

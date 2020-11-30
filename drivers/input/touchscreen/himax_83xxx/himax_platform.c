@@ -205,8 +205,15 @@ int himax_parse_dt(struct himax_ts_data *ts,
 			HIMAX_LOG_TAG);
 	}
 
+	pdata->support_dual_fw = of_property_read_bool(dt, "support_dual_fw");
 	of_property_read_string(dt, "himax,fw-path",
 				&pdata->i_CTPM_firmware_name);
+	/* CU IC: 11 62 30, AL IC: 8A 62 34*/
+	if (pdata->support_dual_fw && lcdtype == 0x8A6234) {
+		of_property_read_string(dt, "himax,fw-path_al",
+				&pdata->i_CTPM_firmware_name);
+		input_info(true, &ts->client->dev, "%s DT:fw for AL IC",HIMAX_LOG_TAG);
+	}
 
 	input_info(true, &ts->client->dev,
 		"%s DT:gpio_irq=%d, gpio_rst=%d, gpio_3v3_en=%d\n",
@@ -850,6 +857,7 @@ int himax_chip_common_probe(struct i2c_client *client,
 		ret = -ENODEV;
 		goto err_check_functionality_failed;
 	}
+
 	if (lcdtype == 0) {
 		input_err(true, &client->dev, "%s %s: lcd is not attached\n",
 			HIMAX_LOG_TAG, __func__);

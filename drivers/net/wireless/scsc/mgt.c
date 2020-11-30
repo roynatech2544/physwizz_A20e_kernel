@@ -15,6 +15,7 @@
 #include <scsc/scsc_mx.h>
 #include <scsc/scsc_release.h>
 #include "mgt.h"
+#include "ioctl.h"
 #include "debug.h"
 #include "mlme.h"
 #include "netif.h"
@@ -1380,14 +1381,15 @@ static int slsi_mib_initial_get(struct slsi_dev *sdev)
 #ifdef CONFIG_SCSC_WLAN_STA_APF
 							       { SLSI_PSID_UNIFI_APF_ACTIVATED, {0, 0} },
 #endif
-							       { SLSI_PSID_UNIFI_SOFT_AP40_MHZ_ON24G, {0, 0} }
+							       { SLSI_PSID_UNIFI_SOFT_AP40_MHZ_ON24G, {0, 0} },
+							       { SLSI_PSID_UNIFI_EXTENDED_CAPABILITIES, {0, 0} },
 							      };/*Check the mibrsp.dataLength when a new mib is added*/
 
 	r = slsi_mib_encode_get_list(&mibreq, sizeof(get_values) / sizeof(struct slsi_mib_get_entry), get_values);
 	if (r != SLSI_MIB_STATUS_SUCCESS)
 		return -ENOMEM;
 
-	mibrsp.dataLength = 194;
+	mibrsp.dataLength = 204;
 	mibrsp.data = kmalloc(mibrsp.dataLength, GFP_KERNEL);
 	if (!mibrsp.data) {
 		kfree(mibreq.data);
@@ -1588,6 +1590,13 @@ static int slsi_mib_initial_get(struct slsi_dev *sdev)
 			sdev->fw_SoftAp_2g_40mhz_enabled = values[mib_index].u.boolValue;
 		else
 			SLSI_DBG2(sdev, SLSI_MLME, "40MHz for Soft AP is disabled!\n");
+		if (values[++mib_index].type != SLSI_MIB_TYPE_NONE) {
+			sdev->fw_ext_cap_ie_len = values[mib_index].u.octetValue.dataLength;
+			memset(sdev->fw_ext_cap_ie, 0, sizeof(sdev->fw_ext_cap_ie));
+			memcpy(sdev->fw_ext_cap_ie, values[mib_index].u.octetValue.data,
+					sdev->fw_ext_cap_ie_len);
+		} else
+			SLSI_DBG2(sdev, SLSI_MLME, "Failed to read Extended capabilities\n");
 
 		kfree(values);
 	}
@@ -2143,6 +2152,32 @@ int slsi_test_send_hanged_vendor_event(struct net_device *dev)
 }
 #endif
 
+int slsi_set_ext_cap(struct slsi_dev *sdev, struct net_device *dev, const u8 *ies, int ie_len, const u8 *ext_cap_mask)
+{
+	const u8              *ext_capab_ie;
+	int                   r = 0;
+
+	ext_capab_ie = cfg80211_find_ie(WLAN_EID_EXT_CAPABILITY, ies, ie_len);
+	if (ext_capab_ie) {
+		u8 ext_cap_ie_len = ext_capab_ie[1];
+		int i = 0;
+		bool set_ext_cap = false;
+
+		ext_capab_ie += 2; /* skip the EID and length*/
+		for (i = 0; i < ext_cap_ie_len; i++) {
+			/* Checking Supplicant's extended capability BITS with driver advertised mask.
+                         */
+			if ((~ext_cap_mask[i] & ext_capab_ie[i]) && !(~ext_cap_mask[i] & sdev->fw_ext_cap_ie[i])) {
+				set_ext_cap = true;
+				sdev->fw_ext_cap_ie[i] = sdev->fw_ext_cap_ie[i] | ext_capab_ie[i];
+			}
+		}
+		if (set_ext_cap)
+			r = slsi_mlme_set_ext_capab(sdev, dev, sdev->fw_ext_cap_ie, sdev->fw_ext_cap_ie_len);
+	}
+	return r;
+}
+
 static bool slsi_search_ies_for_qos_indicators(struct slsi_dev *sdev, u8 *ies, int ies_len)
 {
 	SLSI_UNUSED_PARAMETER_NOT_DEBUG(sdev);
@@ -2373,6 +2408,7 @@ void slsi_vif_deactivated(struct slsi_dev *sdev, struct net_device *dev)
 	/* The station type VIF is deactivated when the AP connection is lost */
 	if (ndev_vif->vif_type == FAPI_VIFTYPE_STATION) {
 		ndev_vif->sta.group_key_set = false;
+		ndev_vif->sta.wep_key_set = false;
 		ndev_vif->sta.vif_status = SLSI_VIF_STATUS_UNSPECIFIED;
 		memset(ndev_vif->sta.keepalive_host_tag, 0, sizeof(ndev_vif->sta.keepalive_host_tag));
 
@@ -3350,12 +3386,29 @@ int  slsi_set_arp_packet_filter(struct slsi_dev *sdev, struct net_device *dev)
 }
 
 #ifdef CONFIG_SCSC_WLAN_ENHANCED_PKT_FILTER
-int slsi_set_enhanced_pkt_filter(struct net_device *dev, u8 pkt_filter_enable)
+int slsi_set_enhanced_pkt_filter(struct net_device *dev, char *command, int buf_len)
 {
 	struct netdev_vif *netdev_vif = netdev_priv(dev);
 	struct slsi_dev   *sdev = netdev_vif->sdev;
+	struct slsi_ioctl_args *ioctl_args = NULL;
 	int ret = 0;
 	int is_suspend = 0;
+	int pkt_filter_enable;
+
+	ioctl_args = slsi_get_private_command_args(command, buf_len, 1);
+	SLSI_VERIFY_IOCTL_ARGS(sdev, ioctl_args);
+
+	if (!slsi_str_to_int(ioctl_args->args[0], &pkt_filter_enable)) {
+		SLSI_ERR(sdev, "Invalid string: '%s'\n", ioctl_args->args[0]);
+		kfree(ioctl_args);
+		return -EINVAL;
+	}
+
+	if (pkt_filter_enable != 0 && pkt_filter_enable != 1) {
+		SLSI_ERR(sdev, "Invalid pkt_filter_enable value: '%s'\n", ioctl_args->args[0]);
+		kfree(ioctl_args);
+		return -EINVAL;
+	}
 
 	SLSI_MUTEX_LOCK(sdev->device_config_mutex);
 	is_suspend = sdev->device_config.user_suspend_mode;
@@ -3363,11 +3416,13 @@ int slsi_set_enhanced_pkt_filter(struct net_device *dev, u8 pkt_filter_enable)
 
 	if (is_suspend) {
 		SLSI_ERR(sdev, "Host is in early suspend state.\n");
+		kfree(ioctl_args);
 		return -EPERM; /* set_enhanced_pkt_filter should not be called after suspend */
 	}
 
 	sdev->enhanced_pkt_filter_enabled = pkt_filter_enable;
 	SLSI_INFO(sdev, "Enhanced packet filter is %s", (pkt_filter_enable ? "enabled" : "disabled"));
+	kfree(ioctl_args);
 	return ret;
 }
 
@@ -3836,7 +3891,8 @@ int slsi_ip_address_changed(struct slsi_dev *sdev, struct net_device *dev, __be3
 			return -EINVAL;
 
 		if (!(peer->capabilities & WLAN_CAPABILITY_PRIVACY) ||
-		    (ndev_vif->sta.group_key_set && peer->pairwise_key_set))
+		    (ndev_vif->sta.group_key_set && peer->pairwise_key_set) ||
+		    ndev_vif->sta.wep_key_set)
 			slsi_send_gratuitous_arp(sdev, dev);
 		else
 			ndev_vif->sta.gratuitous_arp_needed = true;
@@ -4241,6 +4297,7 @@ int slsi_p2p_dev_probe_rsp_ie(struct slsi_dev *sdev, struct net_device *dev, u8 
 				slsi_p2p_vif_deactivate(sdev, dev, true);
 			}
 		}
+		kfree(probe_rsp_ie);
 	}
 
 exit:
@@ -5336,12 +5393,14 @@ int slsi_check_if_channel_restricted_already(struct slsi_dev *sdev, int channel)
 	return 0;
 }
 
-int slsi_set_mib_wifi_sharing_5ghz_channel(struct slsi_dev *sdev, u16 psid, int res,
-					   int offset, int readbyte, char *arg)
+int slsi_set_mib_wifi_sharing_5ghz_channel(struct net_device *dev, u16 psid, char *buf, int buf_len)
 {
+	struct netdev_vif *ndev_vif = netdev_priv(dev);
+	struct slsi_dev   *sdev = ndev_vif->sdev;
+	struct slsi_ioctl_args *ioctl_args = NULL;
 	struct slsi_mib_entry mib_entry;
 	struct slsi_mib_data buffer = { 0, NULL };
-	int error = SLSI_MIB_STATUS_FAILURE;
+	int error = 0;
 	int i;
 	int bit = 0; /* find which bit to set */
 	int byte_pos = 0; /* which index to set bit among 8 larger set*/
@@ -5352,12 +5411,23 @@ int slsi_set_mib_wifi_sharing_5ghz_channel(struct slsi_dev *sdev, u16 psid, int 
 	int p = 0;
 	int new_channels = 0;
 	int freq_to_be_checked = 0;
+	int indoor_chan_arg = 0;
+
+	ioctl_args = slsi_get_private_command_args(buf, buf_len, 26);
+	SLSI_VERIFY_IOCTL_ARGS(sdev, ioctl_args);
+
+	if (!slsi_str_to_int(ioctl_args->args[0], &indoor_chan_arg)) {
+		SLSI_ERR(sdev, "Invalid channel_count string: '%s'\n", ioctl_args->args[0]);
+		kfree(ioctl_args);
+		return -EINVAL;
+	}
 
 	mib_entry.value.type = SLSI_MIB_TYPE_OCTET;
 	mib_entry.value.u.octetValue.dataLength = 8;
 	mib_entry.value.u.octetValue.data = kmalloc(64, GFP_KERNEL);
 
 	if (!mib_entry.value.u.octetValue.data) {
+		SLSI_ERR(sdev, "Malloc of mib_entry.value.u.octetValue.data failed.\n");
 		error = -ENOMEM;
 		goto exit;
 	}
@@ -5365,12 +5435,14 @@ int slsi_set_mib_wifi_sharing_5ghz_channel(struct slsi_dev *sdev, u16 psid, int 
 	for (i = 0; i < 8; i++)
 		mib_entry.value.u.octetValue.data[i] = sdev->wifi_sharing_5ghz_channel[i];
 
-	if (res == 0) {
+	if (indoor_chan_arg == 0) {
+		SLSI_DBG2(sdev, SLSI_MLME, "All 5G channels permitted\n");
 		for (i = 0; i < 25 ; i++)
 			sdev->wifi_sharing_5g_restricted_channels[i] = 0;
 		sdev->num_5g_restricted_channels = 0;
 		new_channels = 1;
-	} else if (res == -1) {
+	} else if (indoor_chan_arg == -1) {
+		SLSI_DBG2(sdev, SLSI_MLME, "No 5G channel permitted\n");
 		for (i = 0; i < 8; i++)
 			mib_entry.value.u.octetValue.data[i] = 0x00;
 
@@ -5384,20 +5456,33 @@ int slsi_set_mib_wifi_sharing_5ghz_channel(struct slsi_dev *sdev, u16 psid, int 
 		}
 		sdev->num_5g_restricted_channels = p;
 		new_channels = 1;
-	} else {
-		num_channels = res;
+	} else if (indoor_chan_arg >= 1 && indoor_chan_arg <= 25) {
+		if ((ioctl_args->arg_count - 1) < indoor_chan_arg) {
+			SLSI_ERR(sdev, "No. of args actually present are lesser than expected %d\n", indoor_chan_arg);
+			error = -EINVAL;
+			goto exit;
+		}
+		num_channels = indoor_chan_arg;
 
 		for (i = 0; i < num_channels; i++) {
-			offset = offset + readbyte + 1;
-			readbyte = slsi_str_to_int(&arg[offset], &res);
+			if (!slsi_str_to_int(ioctl_args->args[i + 1], &indoor_chan_arg)) {
+				SLSI_ERR(sdev, "Invalid channel string: '%s'\n", ioctl_args->args[i + 1]);
+				error = -EINVAL;
+				goto exit;
+			}
+			if (indoor_chan_arg < 36 || indoor_chan_arg > 165) {
+				SLSI_ERR(sdev, "Invalid channel %d\n", indoor_chan_arg);
+				error = -EINVAL;
+				goto exit;
+			}
 			/*if channel is not already present , then only add it*/
-			freq_to_be_checked = ieee80211_channel_to_frequency(res, NL80211_BAND_5GHZ);
+			freq_to_be_checked = ieee80211_channel_to_frequency(indoor_chan_arg, NL80211_BAND_5GHZ);
 			if (slsi_if_valid_wifi_sharing_channel(sdev, freq_to_be_checked) &&
-			    (!slsi_check_if_channel_restricted_already(sdev, res))) {
+			    (!slsi_check_if_channel_restricted_already(sdev, indoor_chan_arg))) {
 				if ((sdev->num_5g_restricted_channels) > 24)
 					break;
 				new_channels = 1;
-				sdev->wifi_sharing_5g_restricted_channels[(sdev->num_5g_restricted_channels)++] = res;
+				sdev->wifi_sharing_5g_restricted_channels[(sdev->num_5g_restricted_channels)++] = indoor_chan_arg;
 			}
 		}
 
@@ -5416,6 +5501,10 @@ int slsi_set_mib_wifi_sharing_5ghz_channel(struct slsi_dev *sdev, u16 psid, int 
 				mib_entry.value.u.octetValue.data[byte_pos] &= (u8)(~(1 << (bit_mask)));
 			}
 		}
+	} else {
+		SLSI_ERR(sdev, "Invalid channel count %d\n", indoor_chan_arg);
+		error = -EINVAL;
+		goto exit;
 	}
 
 	if (new_channels) {
@@ -5434,15 +5523,12 @@ int slsi_set_mib_wifi_sharing_5ghz_channel(struct slsi_dev *sdev, u16 psid, int 
 		error = slsi_mlme_set(sdev, NULL, buffer.data, buffer.dataLength);
 		kfree(buffer.data);
 
-		if (!error)
-			return 0;
-
-exit:
-		SLSI_ERR(sdev, "Error in setting wifi sharing 5ghz channel. error = %d\n", error);
-		return error;
+		if (error)
+			SLSI_ERR(sdev, "Error in setting wifi sharing 5ghz channel. error = %d\n", error);
 	}
-
-	return 0;
+exit:
+	kfree(ioctl_args);
+	return error;
 }
 #endif
 #ifdef CONFIG_SCSC_WLAN_ENABLE_MAC_RANDOMISATION

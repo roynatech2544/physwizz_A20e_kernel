@@ -257,8 +257,7 @@ int slsi_mlme_ndp_terminate(struct slsi_dev *sdev, struct net_device *dev, u16 n
 #endif
 #endif
 
-int slsi_mlme_set_ext_capab(struct slsi_dev *sdev, struct net_device *dev, struct slsi_mib_value *mib_val);
-int slsi_mlme_set_hs2_ext_cap(struct slsi_dev *sdev, struct net_device *dev, const u8 *ies, int ie_len);
+int slsi_mlme_set_ext_capab(struct slsi_dev *sdev, struct net_device *dev, u8 *data, int datalength);
 int slsi_mlme_reassociate(struct slsi_dev *sdev, struct net_device *dev);
 void slsi_mlme_reassociate_resp(struct slsi_dev *sdev, struct net_device *dev);
 int slsi_modify_ies(struct net_device *dev, u8 eid, u8 *ies, int ies_len, u8 ie_index, u8 ie_value);
