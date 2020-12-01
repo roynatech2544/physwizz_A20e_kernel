@@ -1134,7 +1134,9 @@ usi_mode = "hsi2c0" or "hsi2c1" or "spi" or "uart"
 	status = "okay";
 	samsung,i2c-sda-delay = <100>;
 	samsung,i2c-max-bus-freq = <400000>;
-
+	#address-cells = <1>;
+	#size-cells = <0>;
+	
 	himax_ts@48 {
 		compatible = "himax,hxcommon";
 		reg = <0x48>;

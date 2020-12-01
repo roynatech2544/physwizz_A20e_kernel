@@ -89,6 +89,8 @@
 &i2c_2 {
 	status = "okay";
 	samsung,i2c-max-bus-freq = <400000>;
+	#address-cells = <1>;
+	#size-cells = <0>;
 
 	s2dps01@66 {
 		compatible = "i2c,s2dps01";

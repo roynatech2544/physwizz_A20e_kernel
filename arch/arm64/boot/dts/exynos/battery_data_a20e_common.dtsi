@@ -613,6 +613,8 @@
 };
 
 &i2c_0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
 	i2c-gpio,delay-us = <5>;
 	status = "okay";
 	s2mu106-fuelgauge@3B {

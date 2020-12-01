@@ -20,11 +20,11 @@
 
 / {
 	compatible = "samsung,A20E KOR KTT 00", "samsung,EXYNOS7884B";
-
-	dtbo-hw_rev = <0>;
-    dtbo-hw_rev_end = <255>;
-
-
+	model_info-chip = <7885>;
+	model_info-platform = "android";
+	model_info-subtype = "samsung";
+	model_info-hw_rev = <0>;
+	model_info-hw_rev_end = <255>;
 	fragment@model {
 		target-path = "/";
 		__overlay__ {
@@ -120,6 +120,8 @@
 &hsi2c_5 {
 	status = "okay";
 	clock-frequency = <400000>;  /*   400 kHz  */
+	#address-cells = <1>;
+	#size-cells = <0>;
 	sec-nfc@27{
 		compatible = "sec-nfc";
 		reg = <0x27>;

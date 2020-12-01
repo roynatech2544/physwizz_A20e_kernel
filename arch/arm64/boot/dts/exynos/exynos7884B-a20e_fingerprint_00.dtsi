@@ -85,7 +85,9 @@
 	dma-mode;
 	dmas = <&pdma0 21
 		&pdma0 20>;
-
+	#address-cells = <1>;
+	#size-cells = <0>;
+	
 	etspi-spi@0 {
 		compatible = "etspi,et5xx";
 		reg = <0>;
